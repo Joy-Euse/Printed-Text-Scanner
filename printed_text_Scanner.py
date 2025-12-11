@@ -320,68 +320,72 @@ class PrintedTextScanner(QWidget):
         return img_bgr
 
     def run_ocr(self):
-        if self.img is None:
-            QMessageBox.information(self, "OCR", "Load or capture an image first.")
-            return
-        # determine ROI: if user selected ROI, crop; else whole image
-        if self.image_label.roi_rect:
-            x,y,w,h = self.image_label.roi_rect
-            roi = self.img[y:y+h, x:x+w].copy()
-            if roi.size == 0:
-                QMessageBox.warning(self, "ROI", "ROI is empty.")
-                return
-            target_img = roi
-        else:
-            target_img = self.img.copy()
+     if self.img is None:
+         QMessageBox.warning(self, "OCR", "No image loaded or captured.")
+         return
 
-        processed = self.preprocess_for_ocr(target_img)
-        # Convert processed to PIL image for pytesseract
-        rgb = cv2.cvtColor(processed, cv2.COLOR_BGR2RGB)
-        pil = Image.fromarray(rgb)
+     # Crop ROI if selected
+     if self.image_label.roi_rect:
+        x, y, w, h = self.image_label.roi_rect
+        ocr_img = self.img[y:y+h, x:x+w]
+     else:
+         ocr_img = self.img.copy()
 
-        # Build config
-        oem = self.oem_spin.value()
-        psm = self.psm_spin.value()
-        lang = self.lang_combo.currentText()
-        config = f"--oem {oem} --psm {psm}"
+     # Preprocess
+     proc = self.preproc_combo.currentText()
+     gray = cv2.cvtColor(ocr_img, cv2.COLOR_BGR2GRAY)
+ 
+     if proc == "Grayscale":
+         pre_img = gray
+     elif proc == "Binarize(Otsu)":
+         _, pre_img = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+     elif proc == "Adaptive Thresh":
+         pre_img = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                         cv2.THRESH_BINARY, 11, 2)
+     elif proc == "Denoise + Binarize":
+         den = cv2.fastNlMeansDenoising(gray, None, 10, 7, 21)
+         _, pre_img = cv2.threshold(den, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+     else:
+         pre_img = ocr_img
 
-        # Full text
-        try:
-            text = pytesseract.image_to_string(pil, lang=lang, config=config)
-        except Exception as e:
-            QMessageBox.warning(self, "Tesseract error", str(e))
-            return
+    # Convert to PIL
+     pil_img = Image.fromarray(cv2.cvtColor(pre_img, cv2.COLOR_BGR2RGB))
 
-        self.text_output.setPlainText(text)
+    # Tesseract config
+     oem = self.oem_spin.value()
+     psm = self.psm_spin.value()
+     lang = self.lang_combo.currentText()
+     config = f"--oem {oem} --psm {psm}"
+ 
+    # Run OCR
+     data = pytesseract.image_to_data(pil_img, lang=lang, config=config, output_type=pytesseract.Output.DICT)
 
-        # Also get word-level boxes to overlay
-        try:
-            data = pytesseract.image_to_data(pil, lang=lang, config=config, output_type=pytesseract.Output.DICT)
-        except Exception as e:
-            data = None
+    # Extract text & overlay boxes
+     extracted_text = []
+     overlay_boxes = []
 
-        overlay_boxes = []
-        if data:
-            n_boxes = len(data['level'])
-            for i in range(n_boxes):
-                conf = int(data['conf'][i]) if data['conf'][i].isdigit() else -1
-                txt = data['text'][i].strip()
-                if txt == "" or conf < 30:
-                    continue
-                left = data['left'][i]
-                top = data['top'][i]
-                w = data['width'][i]
-                h = data['height'][i]
-                # If ROI used, map boxes to full-image coords
-                if self.image_label.roi_rect:
-                    rx, ry, _, _ = self.image_label.roi_rect
-                    box = (rx + left, ry + top, w, h)
-                else:
-                    box = (left, top, w, h)
-                overlay_boxes.append((box, txt))
+     for i in range(len(data['text'])):
+         txt = data['text'][i].strip()
+         try:
+             conf = int(data['conf'][i])
+         except:
+             conf = -1
 
-        self.image_label.overlay_boxes = overlay_boxes
-        self._update_display_from_bgr(self.img)  # refresh preview so overlay draws on top
+         if txt != "" and conf > 30:
+             extracted_text.append(txt)
+             x, y, w, h = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
+             # Map to full image if ROI used
+             if self.image_label.roi_rect:
+                 rx, ry, _, _ = self.image_label.roi_rect
+                 box = (rx + x, ry + y, w, h)
+             else:
+                 box = (x, y, w, h)
+             overlay_boxes.append((box, txt))
+
+    # Show text
+     self.text_output.setPlainText(" ".join(extracted_text))
+     self.image_label.overlay_boxes = overlay_boxes
+     self.image_label.update()
 
     def save_text(self):
         txt = self.text_output.toPlainText()
