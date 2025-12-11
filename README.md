@@ -24,3 +24,4 @@ If Tesseract is not in PATH, open `printed_text_scanner.py` and set:
 ```py
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
+DONE WITH 💗 by IRADUKUNDA Joyeuse
